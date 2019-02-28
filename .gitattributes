@@ -1,0 +1,14 @@
+# default setting is 'text=auto' (if git thinks it's text, convert to LF on checkout on linux, convert to CRLF on windows)
+* text=auto
+
+# all text files that will normalized and converted to native line endings on checkout
+*.c text
+.gitignore text
+.gitattributes text
+
+# text files that will always have explicit line endings on checkout
+# *.sln text eol=crlf
+# *.sh text eol=lf
+
+# all binary files
+#*.png binary
