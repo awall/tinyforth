@@ -119,7 +119,8 @@ void append_definition(definition_t* def) {
 			case PLUS:
 				switch (g_mode) {
 					case EXECUTE: {
-						int sum = g_stack[--g_stack_i] + g_stack[--g_stack_i];
+						int sum = g_stack[g_stack_i - 1] + g_stack[g_stack_i - 2];
+						g_stack_i -= 2;
 						append(sum);
 						i += 1;
 						break;
