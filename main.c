@@ -4,39 +4,39 @@
 
 #define STRING_SIZE 16
 #define STRING_CAPACITY (STRING_SIZE - 1)
-#define MAX_CELLS_IN_DEFINITION 16
 #define MAX_DEFINITIONS_IN_DICTIONARY 1024
-#define MAX_STACK_SIZE 1024 
+#define MAX_STACK_SIZE 1024
+#define MAX_RETURN_STACK_SIZE 64
+#define MAX_INSTRUCTIONS_IN_PROGRAM 4096
 
 typedef enum {
-	CONSTANT = 0,
-	BEGIN_DEFINE = 1,
-	END_DEFINE = 2,
-	TO_RETURN_STACK = 3,
-	FROM_RETURN_STACK = 4,
-	PRINT_STACK = 5,
-	PEEK_STACK = 6,
-	PLUS = 7
-} command_t;
-
-typedef enum {
-	EXECUTE = 0,
-	COMPILE = 1
-} run_mode_t;
+	I_NOOP, I_LIT, I_PLUS, I_TO_0, I_FROM_0, I_JMP
+} instruction_t;
 
 typedef struct {
 	char name[STRING_SIZE];
-	int inlined;
-	int size;
-	int commands[MAX_CELLS_IN_DEFINITION];
+	instruction_t* instructions;
 } definition_t;
+
+typedef enum {
+	M_EXECUTE, M_COMPILE
+} run_mode_t;
+
+definition_t g_definitions[MAX_DEFINITIONS_IN_DICTIONARY];
+definition_t* g_definitions_end = g_definitions;
+
+instruction_t g_program[MAX_INSTRUCTIONS_IN_PROGRAM * 2];
+instruction_t* g_program_end = g_program;
+instruction_t* g_program_counter = 0;
 
 run_mode_t g_mode;
 char g_word[STRING_SIZE];
-definition_t g_dictionary[MAX_DEFINITIONS_IN_DICTIONARY];
-int g_dictionary_i;
+
 int g_stack[MAX_STACK_SIZE];
-int g_stack_i;
+int* g_stack_end = g_stack;
+
+int g_return_stack[MAX_RETURN_STACK_SIZE];
+int* g_return_stack_end = g_return_stack;
 
 int whitespace(int c) {
 	return c == EOF || c == ' ' || c == '\n';
@@ -62,11 +62,10 @@ void read_word(void) {
 	g_word[i] = 0;
 }
 
-definition_t* find_word(char* str) {
-	for (int i = g_dictionary_i; i > 0; --i) {
-		char* defname = g_dictionary[i - 1].name;
-		if (string_equals(str, defname))
-			return &g_dictionary[i - 1];
+definition_t* find_definition(char* str) {
+	for (definition_t* d = g_definitions_end - 1; d >= g_definitions; --d) {
+		if (string_equals(str, d->name))
+			return d;
 	}
 	return 0;
 }
@@ -89,90 +88,109 @@ int number(char* str) {
 }
 
 void print_stack(void) {
-	for (int i = 0; i < g_stack_i; ++i)
-		printf("%d\n", g_stack[i]);
+	for (int* s = g_stack; s < g_stack_end; ++s)
+		printf("%d\n", *s);
 }
 
-void append(int data) {
-	definition_t def;
-	switch (g_mode) {
-		case EXECUTE:
-			g_stack[g_stack_i++] = data;
-			break;
-		case COMPILE:
-			def = g_dictionary[g_dictionary_i];
-			def.commands[def.size++] = CONSTANT; 
-			def.commands[def.size++] = data;
-			break;
-	}
+void fail(void) {
+	printf("FAILURE! stupid you!");
+	exit(1);
 }
 
-void append_definition(definition_t* def) {
-	int i = 0;
-	while (i < def->size) {
-		switch (def->commands[i]) {
-			case CONSTANT:
-				append(def->commands[i + 1]);
-				i += 2;
-				break;
+void compile_instruction(instruction_t inst, int data) {
+	*g_program_end++ = inst;
+	*g_program_end++ = data;
+}
 
-			case PLUS:
-				switch (g_mode) {
-					case EXECUTE: {
-						int sum = g_stack[g_stack_i - 1] + g_stack[g_stack_i - 2];
-						g_stack_i -= 2;
-						append(sum);
-						i += 1;
-						break;
-					}
-					case COMPILE:
-						printf("NOT IMPLEMENTED");
-						exit(1);
-						break;	
-				}
-				break;
+void execute_plus(void) {
+	int a = *(g_stack_end - 1);
+	int b = *(g_stack_end - 2);
+	*(g_stack_end - 2)= a + b;
+	--g_stack_end;
+}
 
-			case PEEK_STACK: {
-				print_stack();
-				i += 1;
-				break;
-			}
-		}
-	}
+void execute_instruction(void) {
+	instruction_t inst = *g_program_counter++;
+	int data = *g_program_counter++;
+
+	switch (inst) {
+		case I_NOOP:
+			break;
+		case I_LIT:
+			*g_stack_end++ = data;
+			break;
+		case I_PLUS:
+			execute_plus();
+			break;
+		case I_TO_0:
+			*g_return_stack_end++ = *--g_stack_end;
+			break;
+		case I_FROM_0:
+			*g_stack_end++ = *--g_return_stack_end;
+			break;
+		case I_JMP:
+			g_program_counter = (instruction_t*) *--g_stack_end;
+			break;
+	}	
 }
 
 void interpret_word(void) {
-	definition_t* def = find_word(g_word);
+	definition_t* def = find_definition(g_word);
 	if (def) {
-		append_definition(def);
-	} else if (is_number(g_word)) {
-		append(number(g_word));
+		if (g_mode == M_EXECUTE) {
+			*g_return_stack_end++ = 0;
+			g_program_counter = def->instructions;
+			while (1) {
+				execute_instruction();
+				if (!g_program_counter)
+					break;
+			}
+		} else {
+			compile_instruction(I_LIT, (int) (g_program_end + 8));
+			compile_instruction(I_TO_0, 0);
+			compile_instruction(I_LIT, (int) def->instructions);
+			compile_instruction(I_JMP, 0);
+		}
 	}
-}
-
-void add_builtin_to_dictionary(char* str, command_t command) {
-	definition_t* def = &g_dictionary[g_dictionary_i++];
-	for (char* c = str; *c != 0; ++c) {
-		def->name[c - str] = *c;
+	else if (is_number(g_word)) {
+		int num = number(g_word);
+		if (g_mode == M_EXECUTE) {
+			*g_stack_end++ = num;
+		} else {
+			compile_instruction(I_LIT, num);
+		}
 	}
-	def->inlined = 1;
-	def->size = 1;
-	def->commands[0] = command;
-}
-
-void init_dictionary(void) {
-	add_builtin_to_dictionary(":", BEGIN_DEFINE);
-	add_builtin_to_dictionary(";", END_DEFINE);
-	add_builtin_to_dictionary(">>0", TO_RETURN_STACK);
-	add_builtin_to_dictionary("0>>", FROM_RETURN_STACK);
-	add_builtin_to_dictionary(".", PRINT_STACK);
-	add_builtin_to_dictionary("..", PEEK_STACK);
-	add_builtin_to_dictionary("+", PLUS);
+	else if (string_equals(":", g_word)) {
+		if (g_mode != M_EXECUTE)
+			fail();
+		read_word();
+		definition_t* next = g_definitions_end++;
+		next->instructions = g_program_end;
+		for (char* t = next->name, *c = g_word; *c != 0; ++t, ++c)
+			*t = *c;
+		g_mode = M_COMPILE;
+	}
+	else if (string_equals(";", g_word)) {
+		if (g_mode != M_COMPILE)
+			fail();
+		compile_instruction(I_FROM_0, 0);
+		compile_instruction(I_JMP, 0);
+		g_mode = M_EXECUTE;
+	}
+	else if (string_equals("+", g_word)) {
+		if (g_mode == M_EXECUTE) {
+			execute_plus();
+		} else {
+			compile_instruction(I_PLUS, 0);
+		}
+	}
+	else if (string_equals("..", g_word)) {
+		print_stack();
+	}
 }
 
 int main(int argc, char **argv) 
 {
-	init_dictionary();
 	while (1) {
 		read_word();
 		interpret_word();
